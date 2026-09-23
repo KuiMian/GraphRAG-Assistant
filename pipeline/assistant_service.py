@@ -16,6 +16,8 @@ from symbol_resolver import (
     GodotSymbolResolver,
 )
 
+import argparse
+
 
 class AssistantStatus:
     """Assistant lifecycle state constants."""
@@ -487,78 +489,112 @@ class GodotCodeAssistant:
             )
             raise e
 
-if __name__ == "__main__":
-    # --- 离线验证：不消耗任何 Gemini 配额 ---
-    print("\n[*] 正在进行本地符号解析与 DAG 自检验证（离线模式）...")
-    assistant = GodotCodeAssistant(
-        project_root=r"D:\DevTools\Godot\01Games\autobattler1"
+def find_godot_project_root(start_path: Path) -> Path | None:
+    """从当前文件目录逐级向上查找包含 project.godot 的根目录"""
+    current = start_path.resolve()
+    for parent in [current] + list(current.parents):
+        if (parent / "project.godot").exists():
+            return parent
+    return None
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Godot Code Assistant CLI Bridge for EditorPlugin"
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        required=True,
+        help="目标节点/基类名称 (如 CharacterBody2D, Area2D, Resource)",
+    )
+    parser.add_argument(
+        "--query",
+        type=str,
+        required=True,
+        help="自然语言需求描述",
+    )
+    parser.add_argument(
+        "--lang",
+        type=str,
+        default="zh",
+        choices=["zh", "en"],
+        help="交互语言 (zh 或 en)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gemini-3.6-flash",
+        help="使用的 Gemini 模型名称",
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=512,
+        help="思考预算 Thinking Budget",
+    )
+    parser.add_argument(
+        "--json-output",
+        action="store_true",
+        help="是否以标准化 JSON 格式输出供 Godot 插件解析",
     )
 
-    sample_generated_code = """
-extends CharacterBody2D
+    args = parser.parse_args()
 
-@export_group("Movement")
-@export_range(100.0, 500.0, 10.0) var speed: float = 300.0
+    auto_project_root = find_godot_project_root(Path(__file__))
 
-@onready var visuals = %Visuals
+    # 初始化助理
+    assistant = GodotCodeAssistant(
+        model_name=args.model,
+        language=args.lang,
+        project_root=auto_project_root,
+        thinking_budget=args.budget,
+    )
 
-func _ready() -> void:
-    # 验证引擎单例与父类内置方法/属性
-    var window_size = ProjectSettings.get_setting("display/window/size/viewport_width")
-    print("Window:", window_size)
-    velocity = Vector2.ZERO
+    # 状态回调：JSON 模式下不打印杂音，保持 stdout 干净
+    def on_status_change(status: str, detail: str):
+        if not args.json_output:
+            print(f"[{status}] >> {detail}")
 
-func _physics_process(delta: float) -> void:
-    move_and_slide()
-"""
+    try:
+        result = assistant.generate_code_with_self_correction(
+            class_name=args.target,
+            query=args.query,
+            status_hook=on_status_change,
+        )
 
-    report = assistant.validate_code_apis("CharacterBody2D", sample_generated_code)
-    print(f"\n[验证结果] 是否全部合法: {report['valid']}")
-    if not report['valid']:
-        print("未通过的项:")
-        for item in report['unverified_items']:
-            print(f"  - {item}")
-    else:
-        print("[✓] 验证通过！DAG 继承、ProjectSettings 单例、% 唯一节点及 @export_group 完全放行！")
+        if args.json_output:
+            # 供 Godot 插件解析的标准载荷：包含完整回答 + 抽离的纯代码
+            payload = {
+                "success": True,
+                "response_text": result["response_text"],
+                "extracted_code": result["extracted_code"],
+                "is_verified": result["validation"]["valid"],
+                "correction_attempts": result["correction_attempts"],
+                "unverified_items": result["validation"]["unverified_items"],
+            }
+            print("__GODOT_PLUGIN_PAYLOAD_START__")
+            print(json.dumps(payload, ensure_ascii=False))
+            print("__GODOT_PLUGIN_PAYLOAD_END__")
+        else:
+            print("\n================== Extracted GDScript ===================")
+            print(result["extracted_code"])
+            print("=========================================================")
+            print(f"Is Verified: {result['validation']['valid']}")
 
-# if __name__ == "__main__":
-#     test_lang = "zh"
-#     test_project = r"D:\DevTools\\Godot\\01Games\\autobattler1"
+    except Exception as e:
+        if args.json_output:
+            payload = {
+                "success": False,
+                "error": str(e),
+                "extracted_code": "",
+            }
+            print("__GODOT_PLUGIN_PAYLOAD_START__")
+            print(json.dumps(payload, ensure_ascii=False))
+            print("__GODOT_PLUGIN_PAYLOAD_END__")
+        else:
+            print(f"\n[!] 执行失败: {e}", file=sys.stderr)
+            sys.exit(1)
 
-#     # 初始化助理并注入真实项目上下文
-#     assistant = GodotCodeAssistant(
-#         language=test_lang, project_root=test_project
-#     )
 
-#     test_class = "CharacterBody2D"
-#     test_query = (
-#         "实现2D平台跳跃与左右移动，支持重力与跳跃，使用 @export_group 整理参数并为移速添加滑动条范围。"
-#         if test_lang == "zh"
-#         else "Implement 2D platformer movement: left/right run with acceleration, jump, and handle gravity. Export speed with slider range."
-#     )
-
-#     def on_ui_status_change(status: str, detail: str):
-#         print(f"   [Dock Status UI ({assistant.language})] >> {detail}")
-
-#     print(f"Running pipeline with Thinking Budget: {assistant.thinking_budget}...")
-#     result = assistant.generate_code_with_self_correction(
-#         test_class, test_query, status_hook=on_ui_status_change
-#     )
-
-#     print("\n================== Full Model Response ==================")
-#     print(result["response_text"])
-#     print("=========================================================")
-
-#     print("\n================== Extracted GDScript ===================")
-#     print(result["extracted_code"])
-#     print("=========================================================")
-
-#     print("\n================== Validation Report ====================")
-#     val = result["validation"]
-#     print(f"Is Verified: {val['valid']}")
-#     if not val["valid"]:
-#         print("Detailed Issues Found:")
-#         for err in val["unverified_items"]:
-#             print(f"  - {err}")
-#     print(f"Correction Turns Used: {result['correction_attempts']}")
-#     print("=========================================================")
+if __name__ == "__main__":
+    main()

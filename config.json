@@ -1,6 +1,6 @@
 {
-    "api_key": "",
-    "model_name": "gemini-3.5-flash",
-    "language": "zh",
-    "thinking_budget": 512
+	"api_key": "",
+	"language": "zh",
+	"model_name": "gemini-3.6-flash",
+	"thinking_budget": 512
 }

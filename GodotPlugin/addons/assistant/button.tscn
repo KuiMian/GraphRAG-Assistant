@@ -1,0 +1,9 @@
+[gd_scene format=3 uid="uid://b04l8m8uoei07"]
+
+[ext_resource type="Script" uid="uid://bd2iiefahwbd8" path="res://addons/assistant/button.gd" id="1_xe6f3"]
+
+[node name="Button" type="Button" unique_id=634778524]
+offset_right = 227.0
+offset_bottom = 136.0
+text = "adawdadw"
+script = ExtResource("1_xe6f3")
