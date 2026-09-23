@@ -31,13 +31,14 @@ layout_mode = 2
 
 [node name="ResponseLabel" type="Label" parent="TabContainer/Response/HBoxContainer" unique_id=1679461084]
 unique_name_in_owner = true
+auto_translate_mode = 2
 layout_mode = 2
 size_flags_horizontal = 2
 text = "Response"
 
 [node name="StatusLabel" type="Label" parent="TabContainer/Response/HBoxContainer" unique_id=1089879896]
 unique_name_in_owner = true
-auto_translate_mode = 1
+auto_translate_mode = 2
 layout_mode = 2
 size_flags_horizontal = 8
 text = "Status"
@@ -55,6 +56,7 @@ layout_mode = 2
 
 [node name="CodeLabel" type="Label" parent="TabContainer/Response/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1254665160]
 unique_name_in_owner = true
+auto_translate_mode = 2
 layout_mode = 2
 size_flags_horizontal = 2
 text = "Code"
@@ -68,6 +70,7 @@ text = "Copy"
 
 [node name="CodeEdit" type="CodeEdit" parent="TabContainer/Response/PanelContainer/VBoxContainer" unique_id=1607503651]
 unique_name_in_owner = true
+auto_translate_mode = 2
 custom_minimum_size = Vector2(0, 256)
 layout_mode = 2
 text = "for i in range(5):
@@ -137,12 +140,14 @@ layout_mode = 2
 
 [node name="ChatInput" type="TextEdit" parent="TabContainer/Response/PanelContainer2/HBoxContainer" unique_id=105806066]
 unique_name_in_owner = true
+auto_translate_mode = 2
 layout_mode = 2
 size_flags_horizontal = 3
 text = "chat..."
 
 [node name="SubmitButton" type="Button" parent="TabContainer/Response/PanelContainer2/HBoxContainer" unique_id=1024932582]
 unique_name_in_owner = true
+auto_translate_mode = 2
 layout_mode = 2
 text = ">>>"
 
@@ -168,7 +173,6 @@ vertical_alignment = 1
 unique_name_in_owner = true
 custom_minimum_size = Vector2(192, 0)
 layout_mode = 2
-text = "Gemini Api Key..."
 
 [node name="HBoxContainer2" type="HBoxContainer" parent="TabContainer/Settings/VboxContainer" unique_id=1042294935]
 layout_mode = 2
@@ -188,7 +192,7 @@ layout_mode = 2
 min_value = 256.0
 max_value = 1024.0
 step = 128.0
-value = 256.0
+value = 512.0
 rounded = true
 
 [node name="HBoxContainer3" type="HBoxContainer" parent="TabContainer/Settings/VboxContainer" unique_id=2121020220]
@@ -215,6 +219,7 @@ popup/item_1/id = 1
 
 [node name="SaveButton" type="Button" parent="TabContainer/Settings/VboxContainer" unique_id=832366419]
 unique_name_in_owner = true
+auto_translate_mode = 2
 layout_mode = 2
 size_flags_horizontal = 4
 text = "Save"

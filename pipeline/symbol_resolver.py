@@ -30,6 +30,24 @@ class GodotSymbolResolver:
                 members=meta["members"],
             )
 
+    def resolve_singleton_member(self, singleton_name: str, member_name: str) -> bool:
+        """验证单例对象上调用的成员方法/属性/信号是否存在于其类定义及继承链中"""
+        # 1. 检查是否为内置单例 (Input, Time, DisplayServer 等)
+        if singleton_name in self.kb.singletons:
+            target_class = self.kb.singletons[singleton_name].get("type", singleton_name)
+            inherited_symbols = self.kb.dag.get_all_members_flattened(target_class)
+            return member_name in inherited_symbols
+
+        # 2. 检查是否为用户工程的 Autoload 单例
+        if singleton_name in self.project_scanner.autoloads:
+            if singleton_name in self.project_scanner.custom_classes_meta:
+                meta = self.project_scanner.custom_classes_meta[singleton_name]
+                inherited = self.kb.dag.get_all_members_flattened(singleton_name)
+                return (member_name in meta["members"]) or (member_name in inherited)
+            return True
+
+        return False
+
     def resolve(
         self,
         name: str,
@@ -193,7 +211,6 @@ class GDScriptLightweightAnalyzer:
             "load",
             "assert",
             "await",
-            # 内置节点核心常用信号 (Node, Control, Button, Area)
             "ready",
             "tree_entered",
             "tree_exited",
@@ -210,11 +227,13 @@ class GDScriptLightweightAnalyzer:
             "changed",
         }
 
-        # 6. 逐行匹配独立符号
-        # 【关键改动】：(?<![@.%\w]) 同时排除了 @注解、.属性访问、以及 %场景唯一节点
         diagnostics = []
         standalone_ident_pattern = re.compile(
             r"(?<![@.%\w])([A-Za-z_][A-Za-z0-9_]*)\b"
+        )
+        # 链式调用正则：捕获 Singleton.method / Singleton.property
+        singleton_call_pattern = re.compile(
+            r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b"
         )
 
         for idx, raw_line in enumerate(lines, start=1):
@@ -222,6 +241,23 @@ class GDScriptLightweightAnalyzer:
             if not clean_line.strip():
                 continue
 
+            # A. 校验单例链式调用成员的合法性
+            for s_match in singleton_call_pattern.finditer(clean_line):
+                obj_name, member_name = s_match.group(1), s_match.group(2)
+                if (
+                    obj_name in self.resolver.kb.singletons
+                    or obj_name in self.resolver.project_scanner.autoloads
+                ):
+                    if not self.resolver.resolve_singleton_member(obj_name, member_name):
+                        diagnostics.append(
+                            {
+                                "line": idx,
+                                "symbol": f"{obj_name}.{member_name}",
+                                "message": f"单例 '{obj_name}' 不存在成员或方法: '{member_name}'",
+                            }
+                        )
+
+            # B. 校验独立标识符
             tokens = standalone_ident_pattern.findall(clean_line)
             for token in tokens:
                 if token in keywords or token.isdigit():

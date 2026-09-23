@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 from pathlib import Path
@@ -16,14 +17,10 @@ from symbol_resolver import (
     GodotSymbolResolver,
 )
 
-import argparse
-
 
 class AssistantStatus:
-    """Assistant lifecycle state constants."""
-
     IDLE = "IDLE"
-    RETRIEVING = "RETRIEVING"
+    GENERATING = "GENERATING"
     STREAMING_RESPONSE = "STREAMING_RESPONSE"
     VALIDATING = "VALIDATING"
     SELF_CORRECTING = "SELF_CORRECTING"
@@ -34,29 +31,27 @@ class AssistantStatus:
 class GodotCodeAssistant:
     Status = AssistantStatus
 
-    # Status localization dictionary for both English and Chinese
     STATUS_I18N = {
         "en": {
             AssistantStatus.IDLE: "Idle",
-            AssistantStatus.RETRIEVING: "Querying inheritance graph and annotations for {target}...",
-            AssistantStatus.STREAMING_RESPONSE: "Generating code... ({chars} chars / {lines} lines)",
-            AssistantStatus.VALIDATING: "Running static symbol analysis and line tracing...",
-            AssistantStatus.SELF_CORRECTING: "Refining unverified APIs: [{items}] (Attempt {turn})",
+            AssistantStatus.GENERATING: "Generating initial GDScript draft...",
+            AssistantStatus.STREAMING_RESPONSE: "Streaming response... ({chars} chars / {lines} lines)",
+            AssistantStatus.VALIDATING: "Validating against Godot 4 symbols (Extends: {target})...",
+            AssistantStatus.SELF_CORRECTING: "Refining with graph lineage [{target}]: unverified [{items}] (Turn {turn})",
             AssistantStatus.COMPLETED: "Code generated and statically verified.",
             AssistantStatus.FAILED: "Failed: {error}",
         },
         "zh": {
             AssistantStatus.IDLE: "空闲",
-            AssistantStatus.RETRIEVING: "正在检索 {target} 的继承图谱与语言注解...",
-            AssistantStatus.STREAMING_RESPONSE: "正在生成代码... (已生成 {chars} 字符 / {lines} 行)",
-            AssistantStatus.VALIDATING: "正在进行静态符号自省与行号溯源...",
-            AssistantStatus.SELF_CORRECTING: "检测到未定义符号/格式问题，打回重写: [{items}] (第 {turn} 次)",
+            AssistantStatus.GENERATING: "正在生成初版 GDScript 代码...",
+            AssistantStatus.STREAMING_RESPONSE: "正在输出代码... (已生成 {chars} 字符 / {lines} 行)",
+            AssistantStatus.VALIDATING: "正在结合 Godot 4 继承树与符号库进行静态校验 (基类: {target})...",
+            AssistantStatus.SELF_CORRECTING: "打回修正: 基于 {target} 继承链修复未定义符号 [{items}] (第 {turn} 次)",
             AssistantStatus.COMPLETED: "代码生成完成并通过静态校验。",
             AssistantStatus.FAILED: "执行失败: {error}",
         },
     }
 
-    # Godot 4 official built-in annotations
     GODOT_ANNOTATIONS = {
         "@export",
         "@export_category",
@@ -94,18 +89,17 @@ class GodotCodeAssistant:
         kb_path: str = "assets/godot_enriched_kb.json",
         project_root: str | Path | None = None,
         model_name: str = "gemini-2.5-flash",
-        language: str = "en",
+        language: str = "zh",
         thinking_budget: Optional[int] = 512,
     ):
         self.retriever = SymbolicGraphRetriever(graph_path)
         self.model_name = model_name
         self.language = (
-            language.lower() if language.lower() in ("en", "zh") else "en"
+            language.lower() if language.lower() in ("en", "zh") else "zh"
         )
         self.thinking_budget = thinking_budget
         self.current_status: str = AssistantStatus.IDLE
 
-        # 读取配置
         resolved_key = api_key
         cfg_file = Path(config_path)
         if not resolved_key and cfg_file.exists():
@@ -133,7 +127,6 @@ class GodotCodeAssistant:
 
         self.client = genai.Client(api_key=resolved_key)
 
-        # 初始化强化版符号仲裁器与代码自省分析器
         root_dir = Path(__file__).resolve().parent.parent
         resolved_kb_path = (
             Path(kb_path)
@@ -146,7 +139,6 @@ class GodotCodeAssistant:
         self.analyzer = GDScriptLightweightAnalyzer(self.resolver)
 
     def set_project_root(self, project_root: str | Path):
-        """支持动态切换 Godot 游戏工程上下文"""
         self.resolver.set_project_root(project_root)
 
     def _get_localized_status(self, status: str, **kwargs) -> str:
@@ -165,7 +157,7 @@ class GodotCodeAssistant:
     ):
         self.current_status = new_status
         status_msg = f"[{new_status}]" + (f" {detail}" if detail else "")
-        print(f">> State Changed: {status_msg}")
+        print(f">> State Changed: {status_msg}", flush=True)
         if callback:
             try:
                 callback(new_status, detail)
@@ -179,7 +171,6 @@ class GodotCodeAssistant:
         status_hook=None,
         max_retries: int = 4,
     ) -> str:
-        """带连接耗时统计(TTFB)与时间节流的流式通信层"""
         backoff_delays = [3, 8, 15, 25]
         for attempt in range(max_retries):
             try:
@@ -217,7 +208,7 @@ class GodotCodeAssistant:
                                 if self.language == "zh"
                                 else f">> First token received! TTFB: {first_token_cost}s"
                             )
-                            print(ttfb_info)
+                            print(ttfb_info, flush=True)
 
                         full_text += text_piece
                         now = time.time()
@@ -266,7 +257,7 @@ class GodotCodeAssistant:
                         if self.language == "zh"
                         else f"[Notice] Rate limit / server busy ({self.model_name}), waiting {wait_time}s... (Attempt {attempt + 1}/{max_retries})"
                     )
-                    print(notice_msg)
+                    print(notice_msg, flush=True)
                     time.sleep(wait_time)
                 else:
                     raise e
@@ -278,8 +269,12 @@ class GodotCodeAssistant:
             return matches[0].strip()
         return ""
 
-    def validate_code_apis(self, class_name: str, code: str) -> dict:
-        """强化版静态自检：融合 DAG 继承、项目 Autoload、自定义类及注解检测"""
+    def extract_base_class(self, code: str) -> str:
+        """从生成的 GDScript 源码中提取 extends 的目标基类"""
+        m = re.search(r"^\s*extends\s+([A-Za-z0-9_]+)", code, re.MULTILINE)
+        return m.group(1).strip() if m else "Node"
+
+    def validate_code_apis(self, code: str) -> dict:
         if not code:
             return {"valid": False, "error": "No GDScript code block found."}
 
@@ -287,39 +282,26 @@ class GodotCodeAssistant:
         unverified_signatures = []
         lines = code.splitlines()
 
-        # 1. 废弃语法检测 (Godot 3 -> 4)
+        # 1. 废弃语法拦截 (Godot 3 -> 4)
         for idx, line in enumerate(lines, start=1):
             if re.search(r"\bexport\s*\(", line):
                 unverified_details.append(
                     f"Line {idx}: Deprecated Godot 3 syntax 'export(...)'. Use Godot 4 '@export'."
                 )
 
-        # 2. 注解合法性与参数检查
+        # 2. 仅保留注解存在性校验
         found_annotations = re.findall(r"(@[a-zA-Z_][a-zA-Z0-9_]*)", code)
         for anno in set(found_annotations):
             if anno not in self.GODOT_ANNOTATIONS:
                 unverified_details.append(f"Invalid annotation: {anno}")
 
-        for bad_category in re.findall(
-            r"@export_(?:category|group)\s*\(\s*\)", code
-        ):
-            unverified_details.append(
-                f"Malformed annotation: '{bad_category}' requires a string argument."
-            )
-
-        for bad_range in re.findall(r"@export_range\s*\(\s*\)", code):
-            unverified_details.append(
-                f"Malformed annotation: '{bad_range}' requires range arguments."
-            )
-
-        # 3. 走 DAG 与符号仲裁器进行全符号扫描
+        # 3. 静态符号分析 (包含继承树、自定义类、单例及单例成员调用)
         analysis = self.analyzer.analyze_code(code)
         for diag in analysis.get("diagnostics", []):
             line_no = diag["line"]
             symbol = diag["symbol"]
-            unverified_details.append(
-                f"Line {line_no}: Unknown or unverified symbol '{symbol}' on {class_name}"
-            )
+            msg = diag.get("message", f"Unknown symbol '{symbol}'")
+            unverified_details.append(f"Line {line_no}: {msg}")
             unverified_signatures.append(symbol)
 
         return {
@@ -328,36 +310,34 @@ class GodotCodeAssistant:
             "unverified_signatures": list(set(unverified_signatures)),
         }
 
-    def _build_compact_system_instruction(self) -> str:
+    def _build_system_instruction(self) -> str:
         if self.language == "zh":
             return (
                 "Role: Godot 4 GDScript Expert.\n"
                 "Rules:\n"
                 "1. Code: Strictly Godot 4.x syntax in ```gdscript ... ``` block. Use standard English identifiers.\n"
-                "2. Context: Prioritize verified APIs/annotations from Context. Do NOT hallucinate node methods.\n"
+                "2. Explicit Base Class: Every script MUST start with an explicit 'extends <BaseClass>' matching the requirement (e.g. extends CharacterBody2D, extends Area2D, extends Control, etc.).\n"
                 "3. Annotations: Use Godot 4 annotations (@export, @export_range, @export_group, @onready). Never use Godot 3 export(...).\n"
-                "4. Language: GDScript code must use English names. All surrounding explanations and comments must be in Simplified Chinese (简体中文)."
+                "4. Language: GDScript code must use English names. Surrounding explanations and comments must be in Simplified Chinese (简体中文)."
             )
         else:
             return (
                 "Role: Godot 4 GDScript Expert.\n"
                 "Rules:\n"
                 "1. Code: Strictly Godot 4.x syntax in ```gdscript ... ``` block.\n"
-                "2. Context: Prioritize verified APIs/annotations from Context. Do NOT hallucinate node methods.\n"
+                "2. Explicit Base Class: Every script MUST start with an explicit 'extends <BaseClass>' matching the requirement.\n"
                 "3. Annotations: Use Godot 4 annotations (@export, @export_range, @export_group, @onready). Never use Godot 3 export(...).\n"
                 "4. Language: All explanations and code comments strictly in English."
             )
 
     def generate_code_with_self_correction(
         self,
-        class_name: str,
         query: str,
         max_correction_turns: int = 2,
         status_hook: Optional[Callable[[str, str], None]] = None,
         language: Optional[str] = None,
         thinking_budget: Optional[int] = None,
     ) -> dict:
-        """带思考预算调节、精简技术契约与自愈重试的代码生成流水线"""
         if language and language.lower() in ("en", "zh"):
             self.language = language.lower()
 
@@ -366,28 +346,13 @@ class GodotCodeAssistant:
         )
 
         try:
-            # 1. 检索阶段
-            retrieving_detail = self._get_localized_status(
-                AssistantStatus.RETRIEVING, target=class_name
-            )
-            self._update_status(
-                AssistantStatus.RETRIEVING, retrieving_detail, status_hook
-            )
-            retrieval_res = self.retriever.retrieve(class_name, query, top_k=5)
-            ground_truth_context = self.retriever.assemble_prompt_context(
-                retrieval_res
-            )
+            # 步骤 1：让模型根据自然语言需求直接拟合初版脚本
+            gen_detail = self._get_localized_status(AssistantStatus.GENERATING)
+            self._update_status(AssistantStatus.GENERATING, gen_detail, status_hook)
 
-            system_instruction = self._build_compact_system_instruction()
+            system_instruction = self._build_system_instruction()
+            user_content = f"--- User Requirement ---\n{query}"
 
-            user_content = (
-                f"{ground_truth_context}\n\n"
-                f"--- User Request ---\n"
-                f"Target Node: {class_name}\n"
-                f"Requirements: {query}"
-            )
-
-            # 配置生成参数，动态注入思考预算 (Thinking Config)
             config_kwargs = {
                 "system_instruction": system_instruction,
                 "temperature": 0.2,
@@ -402,24 +367,24 @@ class GodotCodeAssistant:
                 config=types.GenerateContentConfig(**config_kwargs),
             )
 
-            # 2. 流式生成
             raw_text = self._stream_chat_with_retry(
                 chat, user_content, status_hook=status_hook
             )
             code = self.extract_gdscript(raw_text)
 
-            # 3. 静态符号自检
-            validating_detail = self._get_localized_status(
-                AssistantStatus.VALIDATING
+            # 步骤 2：自动从生成代码中提炼基类 (extends XXX)
+            base_class = self.extract_base_class(code)
+
+            # 步骤 3：走静态校验器进行符号与单例 API 校验
+            val_detail = self._get_localized_status(
+                AssistantStatus.VALIDATING, target=base_class
             )
-            self._update_status(
-                AssistantStatus.VALIDATING, validating_detail, status_hook
-            )
-            val_report = self.validate_code_apis(class_name, code)
+            self._update_status(AssistantStatus.VALIDATING, val_detail, status_hook)
+            val_report = self.validate_code_apis(code)
 
             correction_attempts = 0
 
-            # 4. 自愈修正循环
+            # 步骤 4：自愈重试
             while (
                 not val_report["valid"]
                 and correction_attempts < max_correction_turns
@@ -430,6 +395,7 @@ class GodotCodeAssistant:
 
                 correcting_detail = self._get_localized_status(
                     AssistantStatus.SELF_CORRECTING,
+                    target=base_class,
                     items=short_summary,
                     turn=correction_attempts,
                 )
@@ -439,30 +405,37 @@ class GodotCodeAssistant:
                     status_hook,
                 )
 
+                # 以当前基类精确拉取图谱 Ground Truth 上下文
+                retrieval_res = self.retriever.retrieve(base_class, query, top_k=5)
+                ground_truth_context = self.retriever.assemble_prompt_context(
+                    retrieval_res
+                )
+
                 if self.language == "zh":
                     feedback_prompt = (
-                        f"静态代码分析警告：代码中调用了未定义方法或符号：\n{error_list_str}\n\n"
-                        f"请修复此脚本。使用合法的 Godot 4 内置函数或属性替代上述调用。"
-                        f"确保返回完整的 ```gdscript ... ``` 代码块，并简要中文说明。"
+                        f"静态代码分析发现以下未定义符号、单例 API 错误或非法用法：\n{error_list_str}\n\n"
+                        f"{ground_truth_context}\n\n"
+                        f"请修复代码。严格依据上述真实存在的 Godot 4 API、内置单例及基类进行编写，返回完整的 ```gdscript ... ``` 代码块。"
                     )
                 else:
                     feedback_prompt = (
-                        f"Static Analysis Warning: Code called unverified methods/symbols:\n{error_list_str}\n\n"
-                        f"Please fix the script using only valid Godot 4 built-ins or properties.\n"
-                        f"Return the complete corrected ```gdscript ... ``` block with brief English explanations."
+                        f"Static code analysis identified unverified symbols or API issues:\n{error_list_str}\n\n"
+                        f"{ground_truth_context}\n\n"
+                        f"Please fix the script using valid Godot 4 APIs listed above. Return the complete ```gdscript ... ``` block."
                     )
 
                 raw_text = self._stream_chat_with_retry(
                     chat, feedback_prompt, status_hook=status_hook
                 )
                 code = self.extract_gdscript(raw_text)
+                base_class = self.extract_base_class(code)
 
                 self._update_status(
-                    AssistantStatus.VALIDATING, validating_detail, status_hook
+                    AssistantStatus.VALIDATING, val_detail, status_hook
                 )
-                val_report = self.validate_code_apis(class_name, code)
+                val_report = self.validate_code_apis(code)
 
-            # 5. 完成
+            # 步骤 5：完成
             completed_detail = self._get_localized_status(
                 AssistantStatus.COMPLETED
             )
@@ -471,7 +444,7 @@ class GodotCodeAssistant:
             )
 
             return {
-                "retrieval": retrieval_res,
+                "target_class": base_class,
                 "response_text": raw_text,
                 "extracted_code": code,
                 "validation": val_report,
@@ -489,42 +462,32 @@ class GodotCodeAssistant:
             )
             raise e
 
+
 def find_godot_project_root(start_path: Path) -> Path | None:
-    """从当前文件目录逐级向上查找包含 project.godot 的根目录"""
     current = start_path.resolve()
     for parent in [current] + list(current.parents):
         if (parent / "project.godot").exists():
             return parent
     return None
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Godot Code Assistant CLI Bridge for EditorPlugin"
     )
-    parser.add_argument(
-        "--target",
-        type=str,
-        required=True,
-        help="目标节点/基类名称 (如 CharacterBody2D, Area2D, Resource)",
-    )
+    # 核心入参：仅接收用户输入的自然语言需求
     parser.add_argument(
         "--query",
         type=str,
         required=True,
-        help="自然语言需求描述",
+        help="用户自然语言需求描述",
     )
     parser.add_argument(
         "--lang",
         type=str,
         default="zh",
         choices=["zh", "en"],
-        help="交互语言 (zh 或 en)",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="gemini-3.6-flash",
-        help="使用的 Gemini 模型名称",
+        help="语言设置 (zh 或 en)",
     )
     parser.add_argument(
         "--budget",
@@ -535,51 +498,49 @@ def main():
     parser.add_argument(
         "--json-output",
         action="store_true",
-        help="是否以标准化 JSON 格式输出供 Godot 插件解析",
+        help="以 JSON 格式输出供 Godot 编辑器插件解析",
     )
 
     args = parser.parse_args()
-
     auto_project_root = find_godot_project_root(Path(__file__))
 
-    # 初始化助理
     assistant = GodotCodeAssistant(
-        model_name=args.model,
         language=args.lang,
         project_root=auto_project_root,
         thinking_budget=args.budget,
     )
 
-    # 状态回调：JSON 模式下不打印杂音，保持 stdout 干净
     def on_status_change(status: str, detail: str):
         if not args.json_output:
-            print(f"[{status}] >> {detail}")
+            print(f"[{status}] >> {detail}", flush=True)
 
     try:
+        # 完全无需指定基类，全自动推断与闭环校验
         result = assistant.generate_code_with_self_correction(
-            class_name=args.target,
             query=args.query,
             status_hook=on_status_change,
         )
 
         if args.json_output:
-            # 供 Godot 插件解析的标准载荷：包含完整回答 + 抽离的纯代码
             payload = {
                 "success": True,
+                "target_class": result["target_class"],
                 "response_text": result["response_text"],
                 "extracted_code": result["extracted_code"],
                 "is_verified": result["validation"]["valid"],
                 "correction_attempts": result["correction_attempts"],
                 "unverified_items": result["validation"]["unverified_items"],
             }
-            print("__GODOT_PLUGIN_PAYLOAD_START__")
-            print(json.dumps(payload, ensure_ascii=False))
-            print("__GODOT_PLUGIN_PAYLOAD_END__")
+            print("__GODOT_PLUGIN_PAYLOAD_START__", flush=True)
+            print(json.dumps(payload, ensure_ascii=False), flush=True)
+            print("__GODOT_PLUGIN_PAYLOAD_END__", flush=True)
         else:
             print("\n================== Extracted GDScript ===================")
             print(result["extracted_code"])
             print("=========================================================")
-            print(f"Is Verified: {result['validation']['valid']}")
+            print(f"推导基类: {result['target_class']}")
+            print(f"静态校验通过: {result['validation']['valid']}")
+            print(f"自愈修正轮数: {result['correction_attempts']}")
 
     except Exception as e:
         if args.json_output:
@@ -588,9 +549,9 @@ def main():
                 "error": str(e),
                 "extracted_code": "",
             }
-            print("__GODOT_PLUGIN_PAYLOAD_START__")
-            print(json.dumps(payload, ensure_ascii=False))
-            print("__GODOT_PLUGIN_PAYLOAD_END__")
+            print("__GODOT_PLUGIN_PAYLOAD_START__", flush=True)
+            print(json.dumps(payload, ensure_ascii=False), flush=True)
+            print("__GODOT_PLUGIN_PAYLOAD_END__", flush=True)
         else:
             print(f"\n[!] 执行失败: {e}", file=sys.stderr)
             sys.exit(1)
