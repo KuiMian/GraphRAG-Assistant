@@ -262,12 +262,47 @@ class GodotCodeAssistant:
                 else:
                     raise e
 
-    def extract_gdscript(self, response_text: str) -> str:
-        pattern = r"```(?:gdscript)?\s*(.*?)```"
-        matches = re.findall(pattern, response_text, re.DOTALL)
-        if matches:
-            return matches[0].strip()
-        return ""
+    def parse_structured_response(self, text: str) -> dict:
+        """
+        通过明确定义的语义标签协议提取：
+        <approach>: 实现思路
+        <gdscript>: 纯净 GDScript 源码
+        <key_points>: 核心要点及注意事项
+        """
+        approach = ""
+        code = ""
+        key_points = ""
+
+        # 提取思路 <approach>
+        m_app = re.search(r"<approach>([\s\S]*?)</approach>", text, re.IGNORECASE)
+        if m_app:
+            approach = m_app.group(1).strip()
+
+        # 提取代码 <gdscript>
+        m_code = re.search(r"<gdscript>([\s\S]*?)</gdscript>", text, re.IGNORECASE)
+        if m_code:
+            code = m_code.group(1).strip()
+        else:
+            # 容错兜底：若模型漏打标签但输出了标准 markdown 语法块
+            m_alt = re.search(r"```(?:gdscript)?\s*([\s\S]*?)```", text)
+            if m_alt:
+                code = m_alt.group(1).strip()
+
+        # 如果代码中意外包裹了 Markdown 标识，再次剔除保证纯净
+        if code.startswith("```"):
+            code = re.sub(r"^```[a-zA-Z0-9_]*\n?", "", code)
+            code = re.sub(r"\n?```$", "", code).strip()
+
+        # 提取核心要点 <key_points>
+        m_points = re.search(r"<key_points>([\s\S]*?)</key_points>", text, re.IGNORECASE)
+        if m_points:
+            key_points = m_points.group(1).strip()
+
+        return {
+            "approach": approach,
+            "extracted_code": code,
+            "key_points": key_points,
+        }
 
     def extract_base_class(self, code: str) -> str:
         """从生成的 GDScript 源码中提取 extends 的目标基类"""
@@ -314,20 +349,37 @@ class GodotCodeAssistant:
         if self.language == "zh":
             return (
                 "Role: Godot 4 GDScript Expert.\n"
-                "Rules:\n"
-                "1. Code: Strictly Godot 4.x syntax in ```gdscript ... ``` block. Use standard English identifiers.\n"
-                "2. Explicit Base Class: Every script MUST start with an explicit 'extends <BaseClass>' matching the requirement (e.g. extends CharacterBody2D, extends Area2D, extends Control, etc.).\n"
-                "3. Annotations: Use Godot 4 annotations (@export, @export_range, @export_group, @onready). Never use Godot 3 export(...).\n"
-                "4. Language: GDScript code must use English names. Surrounding explanations and comments must be in Simplified Chinese (简体中文)."
+                "Output Protocol Rules:\n"
+                "你必须且仅允许使用以下 3 个 XML 风格标签组织输出，严禁在标签外书写任何文字或引言：\n\n"
+                "<approach>\n"
+                "1 到 3 句话说明核心实现方案与思路。严禁出现任何内部自省、检查报告或“以下是代码”等套话。\n"
+                "</approach>\n\n"
+                "<gdscript>\n"
+                "# 完整的纯净 Godot 4 GDScript 源码，首行必须写明明确的 extends <BaseClass>，严格遵循 Godot 4 规范与 @export 注解。\n"
+                "</gdscript>\n\n"
+                "<key_points>\n"
+                "列出 1 到 3 条使用该脚本的关键注意事项（如必须挂载的子节点类型、输入映射 Action 名称或分组名）。若无特殊要求可留空。\n"
+                "</key_points>\n\n"
+                "Language Rules:\n"
+                "- GDScript 代码标识符与变量名全英文。\n"
+                "- <approach> 和 <key_points> 内容使用简体中文。"
             )
         else:
             return (
                 "Role: Godot 4 GDScript Expert.\n"
-                "Rules:\n"
-                "1. Code: Strictly Godot 4.x syntax in ```gdscript ... ``` block.\n"
-                "2. Explicit Base Class: Every script MUST start with an explicit 'extends <BaseClass>' matching the requirement.\n"
-                "3. Annotations: Use Godot 4 annotations (@export, @export_range, @export_group, @onready). Never use Godot 3 export(...).\n"
-                "4. Language: All explanations and code comments strictly in English."
+                "Output Protocol Rules:\n"
+                "You MUST structure your response strictly inside these 3 XML-style tags, with NO text outside tags:\n\n"
+                "<approach>\n"
+                "1-3 concise sentences explaining the technical architecture and approach. No meta-chatter or 'here is the code'.\n"
+                "</approach>\n\n"
+                "<gdscript>\n"
+                "# Complete, clean Godot 4 GDScript code. Must start with explicit 'extends <BaseClass>'. Strictly Godot 4 syntax and annotations.\n"
+                "</gdscript>\n\n"
+                "<key_points>\n"
+                "1-3 bullet points on critical setup details (e.g. required child node types, expected Input Map actions, group names).\n"
+                "</key_points>\n\n"
+                "Language Rules:\n"
+                "- All explanations and comments strictly in English."
             )
 
     def generate_code_with_self_correction(
@@ -346,7 +398,7 @@ class GodotCodeAssistant:
         )
 
         try:
-            # 步骤 1：让模型根据自然语言需求直接拟合初版脚本
+            # 步骤 1：生成初版
             gen_detail = self._get_localized_status(AssistantStatus.GENERATING)
             self._update_status(AssistantStatus.GENERATING, gen_detail, status_hook)
 
@@ -370,12 +422,13 @@ class GodotCodeAssistant:
             raw_text = self._stream_chat_with_retry(
                 chat, user_content, status_hook=status_hook
             )
-            code = self.extract_gdscript(raw_text)
+            parsed = self.parse_structured_response(raw_text)
+            code = parsed["extracted_code"]
 
-            # 步骤 2：自动从生成代码中提炼基类 (extends XXX)
+            # 步骤 2：自动提炼基类
             base_class = self.extract_base_class(code)
 
-            # 步骤 3：走静态校验器进行符号与单例 API 校验
+            # 步骤 3：静态校验
             val_detail = self._get_localized_status(
                 AssistantStatus.VALIDATING, target=base_class
             )
@@ -413,21 +466,24 @@ class GodotCodeAssistant:
 
                 if self.language == "zh":
                     feedback_prompt = (
-                        f"静态代码分析发现以下未定义符号、单例 API 错误或非法用法：\n{error_list_str}\n\n"
+                        f"静态代码分析发现以下未定义符号或 API 错误：\n{error_list_str}\n\n"
                         f"{ground_truth_context}\n\n"
-                        f"请修复代码。严格依据上述真实存在的 Godot 4 API、内置单例及基类进行编写，返回完整的 ```gdscript ... ``` 代码块。"
+                        f"请修复代码。严格依据上述真实存在的 Godot 4 API、内置单例及基类修正。\n"
+                        f"必须依然严格按照 <approach>、<gdscript>、<key_points> 这 3 个标签输出，严禁在标签外写任何文字或辩解。"
                     )
                 else:
                     feedback_prompt = (
                         f"Static code analysis identified unverified symbols or API issues:\n{error_list_str}\n\n"
                         f"{ground_truth_context}\n\n"
-                        f"Please fix the script using valid Godot 4 APIs listed above. Return the complete ```gdscript ... ``` block."
+                        f"Please fix the script using valid Godot 4 APIs listed above.\n"
+                        f"You MUST format the entire output strictly with <approach>, <gdscript>, and <key_points> tags. No text outside tags."
                     )
 
                 raw_text = self._stream_chat_with_retry(
                     chat, feedback_prompt, status_hook=status_hook
                 )
-                code = self.extract_gdscript(raw_text)
+                parsed = self.parse_structured_response(raw_text)
+                code = parsed["extracted_code"]
                 base_class = self.extract_base_class(code)
 
                 self._update_status(
@@ -443,9 +499,19 @@ class GodotCodeAssistant:
                 AssistantStatus.COMPLETED, completed_detail, status_hook
             )
 
+            # 构造用于在 Godot 中合并展示的纯净说明文本（排除了代码与自愈杂音）
+            display_response_parts = []
+            if parsed["approach"]:
+                display_response_parts.append(f"**思路方案**：\n{parsed['approach']}")
+            if parsed["key_points"]:
+                display_response_parts.append(f"**核心要点**：\n{parsed['key_points']}")
+            clean_display_text = "\n\n".join(display_response_parts)
+
             return {
                 "target_class": base_class,
-                "response_text": raw_text,
+                "response_text": clean_display_text,
+                "approach": parsed["approach"],
+                "key_points": parsed["key_points"],
                 "extracted_code": code,
                 "validation": val_report,
                 "correction_attempts": correction_attempts,
@@ -475,7 +541,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="Godot Code Assistant CLI Bridge for EditorPlugin"
     )
-    # 核心入参：仅接收用户输入的自然语言需求
     parser.add_argument(
         "--query",
         type=str,
@@ -515,7 +580,6 @@ def main():
             print(f"[{status}] >> {detail}", flush=True)
 
     try:
-        # 完全无需指定基类，全自动推断与闭环校验
         result = assistant.generate_code_with_self_correction(
             query=args.query,
             status_hook=on_status_change,
@@ -526,6 +590,8 @@ def main():
                 "success": True,
                 "target_class": result["target_class"],
                 "response_text": result["response_text"],
+                "approach": result["approach"],
+                "key_points": result["key_points"],
                 "extracted_code": result["extracted_code"],
                 "is_verified": result["validation"]["valid"],
                 "correction_attempts": result["correction_attempts"],
@@ -538,7 +604,9 @@ def main():
             print("\n================== Extracted GDScript ===================")
             print(result["extracted_code"])
             print("=========================================================")
-            print(f"推导基类: {result['target_class']}")
+            print(f"思路方案:\n{result['approach']}")
+            print(f"\n核心要点:\n{result['key_points']}")
+            print(f"\n推导基类: {result['target_class']}")
             print(f"静态校验通过: {result['validation']['valid']}")
             print(f"自愈修正轮数: {result['correction_attempts']}")
 

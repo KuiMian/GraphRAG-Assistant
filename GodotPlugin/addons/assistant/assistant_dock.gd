@@ -1,5 +1,4 @@
 @tool
-
 extends PanelContainer
 
 @onready var response_label: Label = %ResponseLabel
@@ -9,53 +8,83 @@ extends PanelContainer
 @onready var code_edit: CodeEdit = %CodeEdit
 @onready var chat_input: TextEdit = %ChatInput
 @onready var submit_button: Button = %SubmitButton
-
+@onready var text_label: RichTextLabel = %TextLabel
 
 #region python backend
 
 const BACKEND_PATH := "../"
-
 const PYTHON_CMD := "uv"
 const SERVICE_PATH := BACKEND_PATH + "pipeline/assistant_service.py"
 
-var process_pipe: Dictionary = {}
-var pipe_file: FileAccess = null
-var process_pid: int = -1
-var output_buffer: String = ""
+var worker_thread: Thread = null
 
-func run_assistant_task(query: String) -> void:
-	output_buffer = ""
+# 用于线程间安全传递状态与完成事件的信号
+signal state_updated(state_text: String)
+signal ttfb_received(ttfb_text: String)
+signal task_completed(output_buffer: String)
 
+func _start_worker_thread(query: String) -> void:
+	if worker_thread != null and worker_thread.is_alive():
+		return
+
+	if worker_thread != null:
+		worker_thread.wait_to_finish()
+
+	worker_thread = Thread.new()
+	worker_thread.start(_thread_execute.bind(query))
+
+## 运行在后台 Worker 线程中，完全不阻塞编辑器主线程
+func _thread_execute(query: String) -> void:
 	var real_service_path := ProjectSettings.globalize_path("res://" + SERVICE_PATH).simplify_path()
 	var backend_root_dir := ProjectSettings.globalize_path("res://" + BACKEND_PATH).simplify_path()
 
-	print("工作目录: ", backend_root_dir)
-	print("执行脚本: ", real_service_path)
-
-	if not FileAccess.file_exists(real_service_path):
-		push_error("错误: 找不到服务文件: " + real_service_path)
-		return
+	var lang_val: String = str(config_data.get("language", "zh"))
+	var budget_val: String = str(int(config_data.get("thinking_budget", 512)))
 
 	var args: PackedStringArray = [
 		"run",
 		"--directory", backend_root_dir,
 		"python",
+		"-u",
 		"-X", "utf8",
 		real_service_path,
 		"--query", query,
-		"--budget", "256",
+		"--lang", lang_val,
+		"--budget", budget_val,
 		"--json-output"
 	]
 
-	process_pipe = OS.execute_with_pipe(PYTHON_CMD, args, true)
-
-	if process_pipe.is_empty() or not process_pipe.has("stdio"):
-		push_error("无法拉起 Python 子进程！请检查命令与 PATH。")
+	var pipe_dict := OS.execute_with_pipe(PYTHON_CMD, args, true)
+	if pipe_dict.is_empty() or not pipe_dict.has("stdio"):
+		task_completed.emit.call_deferred("")
 		return
 
-	pipe_file = process_pipe.get("stdio")
-	process_pid = process_pipe.get("pid", -1)
-	set_process(true)
+	var pipe: FileAccess = pipe_dict.get("stdio")
+	var pid: int = pipe_dict.get("pid", -1)
+	var thread_buffer := ""
+
+	while OS.is_process_running(pid) or not pipe.eof_reached():
+		var line := pipe.get_line()
+		if not line.is_empty():
+			thread_buffer += line + "\n"
+			_parse_stream_in_thread(line)
+		else:
+			OS.delay_msec(20) # 释放 CPU 片刻，避免空转
+
+	pipe.close()
+	# 安全切换回主线程处理最终 JSON 渲染
+	task_completed.emit.call_deferred(thread_buffer)
+
+func _parse_stream_in_thread(line: String) -> void:
+	var clean := line.strip_edges()
+	if clean.begins_with(">> State Changed:"):
+		var start := clean.find("[")
+		var end := clean.find("]")
+		if start != -1 and end != -1 and end > start:
+			var tag := clean.substr(start + 1, end - start - 1)
+			state_updated.emit.call_deferred(tag)
+	elif clean.begins_with(">> 收到首字响应") or clean.begins_with(">> First token received"):
+		ttfb_received.emit.call_deferred(clean)
 
 #endregion python backend
 
@@ -81,7 +110,6 @@ var config_data := {
 func load_config() -> void:
 	var file := FileAccess.open(config_path, FileAccess.READ)
 	if not file:
-		push_error("Config file not found: " + config_path)
 		return
 
 	var text := file.get_as_text()
@@ -91,9 +119,6 @@ func load_config() -> void:
 	if parsed is Dictionary:
 		config_data.merge(parsed, true)
 		_refresh_ui()
-		print("Config file load: ", config_data)
-	else:
-		push_error("Format of config file might wrong.")
 
 func save_config() -> void:
 	if api_key_input:
@@ -101,33 +126,131 @@ func save_config() -> void:
 	if thinking_budget_span:
 		config_data["thinking_budget"] = int(thinking_budget_span.value)
 	if language_button:
-		var selected_id = language_button.get_selected_id()
-		config_data["language"] = "zh" if selected_id == 0 else "en"
+		config_data["language"] = "zh" if language_button.get_selected_id() == 0 else "en"
 
 	var file := FileAccess.open(config_path, FileAccess.WRITE)
-
-	var json_str := JSON.stringify(config_data, "\t")
-	file.store_string(json_str)
-	file.close()
-	print("Save config at ", config_path)
-
+	if file:
+		file.store_string(JSON.stringify(config_data, "\t"))
+		file.close()
+		status_label.text = "配置已保存"
 
 #endregion config
+
+#region UI & Event Handlers
 
 func _refresh_ui() -> void:
 	if api_key_input:
 		api_key_input.text = config_data.get("api_key", "")
-
 	if thinking_budget_span:
 		thinking_budget_span.value = config_data.get("thinking_budget", 512)
-
 	if language_button:
-		var lang_str: String = config_data.get("language", "zh")
-		match lang_str:
-			"zh":
-				language_button.select(0)
-			"en":
-				language_button.select(1)
+		language_button.select(0 if config_data.get("language", "zh") == "zh" else 1)
+
+func _on_submit_button_pressed() -> void:
+	var query := chat_input.text.strip_edges()
+	if query.is_empty():
+		return
+
+	if worker_thread != null and worker_thread.is_alive():
+		return
+
+	save_config()
+
+	submit_button.disabled = true
+	chat_input.editable = false
+
+	status_label.text = "准备生成..."
+	response_label.text = "等待首字推理..."
+	code_edit.text = ""
+	text_label.text = ""
+
+	_start_worker_thread(query)
+
+func _on_copy_pressed() -> void:
+	if code_edit.text.is_empty():
+		return
+	DisplayServer.clipboard_set(code_edit.text)
+	status_label.text = "代码已复制"
+
+# 接收后台线程发射回来的状态信号并实时刷新 UI
+func _on_state_updated(tag: String) -> void:
+	status_label.text = tag
+
+func _on_ttfb_received(ttfb_str: String) -> void:
+	response_label.text = ttfb_str
+
+func _on_task_completed(output_buffer: String) -> void:
+	if worker_thread != null:
+		worker_thread.wait_to_finish()
+		worker_thread = null
+
+	var start_marker := "__GODOT_PLUGIN_PAYLOAD_START__"
+	var end_marker := "__GODOT_PLUGIN_PAYLOAD_END__"
+
+	var start_idx := output_buffer.find(start_marker)
+	var end_idx := output_buffer.find(end_marker)
+
+	if start_idx != -1 and end_idx != -1:
+		var json_str := output_buffer.substr(
+			start_idx + start_marker.length(),
+			end_idx - (start_idx + start_marker.length())
+		).strip_edges()
+
+		var json_parser := JSON.new()
+		var err := json_parser.parse(json_str)
+
+		if err == OK and json_parser.data is Dictionary:
+			var data: Dictionary = json_parser.data
+			if data.get("success", false):
+				code_edit.text = data.get("extracted_code", "")
+
+				var clean_desc: String = data.get("response_text", "")
+				if clean_desc.is_empty():
+					text_label.visible = false
+				else:
+					text_label.visible = true
+					text_label.text = _format_markdown_to_bbcode(clean_desc)
+
+				var target_class: String = data.get("target_class", "Node")
+				var is_verified: bool = data.get("is_verified", false)
+				var turns: int = int(data.get("correction_attempts", 0))
+
+				code_label.text = "BaseClass: %s | Verified: %s | Correction Rounds: %d" % [
+					target_class,
+					"通过" if is_verified else "未完全通过",
+					turns
+				]
+				status_label.text = "代码生成完毕"
+			else:
+				status_label.text = "执行失败: " + data.get("error", "未知错误")
+				text_label.text = data.get("error", "")
+				text_label.visible = true
+		else:
+			status_label.text = "JSON 解析失败"
+	else:
+		status_label.text = "子进程异常退出"
+
+	chat_input.editable = true
+	submit_button.disabled = false
+
+#endregion UI & Event Handlers
+
+func _format_markdown_to_bbcode(md_text: String) -> String:
+	if md_text.is_empty():
+		return ""
+	var bbcode := md_text
+	var regex_bold := RegEx.new()
+	regex_bold.compile("\\*\\*(.*?)\\*\\*")
+	bbcode = regex_bold.sub(bbcode, "[b]$1[/b]", true)
+
+	var regex_code := RegEx.new()
+	regex_code.compile("`([^`]+)`")
+	bbcode = regex_code.sub(bbcode, "[color=#e0a96d]$1[/color]", true)
+
+	var regex_list := RegEx.new()
+	regex_list.compile("(?m)^[\\-\\+]\\s+(.*)$")
+	bbcode = regex_list.sub(bbcode, " • $1", true)
+	return bbcode.strip_edges()
 
 func _disable_auto_translate() -> void:
 	response_label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
@@ -144,87 +267,22 @@ func _ready() -> void:
 
 	var highlighter := GDScriptSyntaxHighlighter.new()
 	code_edit.syntax_highlighter = highlighter
-
 	code_edit.gutters_draw_line_numbers = true
 	code_edit.gutters_draw_fold_gutter = true
 
 	save_button.pressed.connect(save_config)
+	submit_button.pressed.connect(_on_submit_button_pressed)
+	copy_button.pressed.connect(_on_copy_pressed)
+
+	state_updated.connect(_on_state_updated)
+	ttfb_received.connect(_on_ttfb_received)
+	task_completed.connect(_on_task_completed)
+
 	config_path = _get_real_config_path()
 	load_config()
 
-	print("--- 开始测试 Python 管道连接 ---")
-	run_assistant_task("当玩家进入此区域时，打印玩家名称并扣除 10 点生命值")
+	set_process(false)
 
-func _process(_delta: float) -> void:
-	if process_pid == -1 or pipe_file == null:
-		set_process(false)
-		return
-
-	while pipe_file.get_error() == OK and not pipe_file.eof_reached():
-		var line := pipe_file.get_line()
-		if not line.is_empty():
-			output_buffer += line + "\n"
-			_parse_stream_output(line)
-		else:
-			break
-
-	if not OS.is_process_running(process_pid):
-		while pipe_file.get_error() == OK and not pipe_file.eof_reached():
-			var remaining := pipe_file.get_line()
-			if not remaining.is_empty():
-				output_buffer += remaining + "\n"
-				_parse_stream_output(remaining)
-
-		set_process(false)
-		pipe_file.close()
-		pipe_file = null
-		process_pid = -1
-		_on_process_completed()
-
-func _parse_stream_output(line: String) -> void:
-	var clean := line.strip_edges()
-	if clean.begins_with(">> State Changed:"):
-		print("[Godot UI 状态捕获] ", clean)
-		status_label.text = clean.substr(">> State Changed:".length()).strip_edges()
-	elif clean.begins_with(">> 收到首字响应"):
-		response_label.text = clean
-	elif clean.begins_with("[Notice]") or clean.begins_with("[!]"):
-		print("[Python 提示/报错] ", clean)
-
-func _on_process_completed() -> void:
-	print("\n--- 进程执行完毕，解析最终结果 ---")
-
-	var start_marker: String = "__GODOT_PLUGIN_PAYLOAD_START__"
-	var end_marker: String = "__GODOT_PLUGIN_PAYLOAD_END__"
-
-	var start_idx: int = output_buffer.find(start_marker)
-	var end_idx: int = output_buffer.find(end_marker)
-
-	if start_idx != -1 and end_idx != -1:
-		var json_str: String = output_buffer.substr(
-			start_idx + start_marker.length(),
-			end_idx - (start_idx + start_marker.length())
-		).strip_edges()
-
-		var json_parser: JSON = JSON.new()
-		var err: Error = json_parser.parse(json_str)
-
-		if err == OK:
-			var data: Dictionary = json_parser.data
-			print("是否验证通过: ", data.get("is_verified", false))
-			print("提取基类: ", data.get("target_class", ""))
-			print("自愈修正轮数: ", data.get("correction_attempts", 0))
-			print("\n生成的 GDScript 代码:\n------------------------------------")
-			print(data.get("extracted_code", ""))
-			print("------------------------------------")
-		else:
-			push_error("JSON 解析失败: " + json_parser.get_error_message())
-	else:
-		status_label.text = "子进程异常退出 (未输出有效 Payload)"
-		print("================ [Python 原始输出调试] ================")
-		print("缓冲区长度: ", output_buffer.length())
-		print("内容:\n", output_buffer if not output_buffer.is_empty() else "(输出为空，大概率是启动命令失败或崩溃在 stderr)")
-		print("======================================================")
-		response_label.text = output_buffer
-
-		push_error("未能在输出中找到标准 Payload 标记！原始输出:\n" + output_buffer)
+func _exit_tree() -> void:
+	if worker_thread != null and worker_thread.is_alive():
+		worker_thread.wait_to_finish()
