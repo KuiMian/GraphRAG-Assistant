@@ -23,10 +23,10 @@ class GodotProjectScanner:
         if not self.project_root or not self.project_root.exists():
             return
 
-        print(f"[*] 正在扫描项目工程: {self.project_root.resolve()} ...")
+        print(f"正在扫描项目工程: {self.project_root.resolve()} ...")
         self._scan_autoloads()
         self._scan_custom_classes()
-        print(f"[✓] 项目扫描完毕:")
+        print(f"项目扫描完毕:")
         print(f"    - Autoload 单例: {len(self.autoloads)} 个")
         print(f"    - 自定义全局类: {len(self.custom_classes_meta)} 个")
 
@@ -46,7 +46,7 @@ class GodotProjectScanner:
                         path = parts[1].strip().strip('"').replace("*", "")
                         self.autoloads[name] = path
         except Exception as e:
-            print(f"[!] 扫描 Autoload 失败: {e}")
+            print(f"扫描 Autoload 失败: {e}")
 
     def _scan_custom_classes(self):
         cname_pattern = re.compile(

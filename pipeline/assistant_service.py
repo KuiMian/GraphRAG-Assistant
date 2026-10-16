@@ -458,7 +458,7 @@ class GodotCodeAssistant:
                     status_hook,
                 )
 
-                # 以当前基类精确拉取图谱 Ground Truth 上下文
+                # 以当前基类拉取图谱 Ground Truth 上下文
                 retrieval_res = self.retriever.retrieve(base_class, query, top_k=5)
                 ground_truth_context = self.retriever.assemble_prompt_context(
                     retrieval_res
@@ -469,7 +469,7 @@ class GodotCodeAssistant:
                         f"静态代码分析发现以下未定义符号或 API 错误：\n{error_list_str}\n\n"
                         f"{ground_truth_context}\n\n"
                         f"请修复代码。严格依据上述真实存在的 Godot 4 API、内置单例及基类修正。\n"
-                        f"必须依然严格按照 <approach>、<gdscript>、<key_points> 这 3 个标签输出，严禁在标签外写任何文字或辩解。"
+                        f"必须严格按照 <approach>、<gdscript>、<key_points> 这 3 个标签输出。"
                     )
                 else:
                     feedback_prompt = (
@@ -491,7 +491,7 @@ class GodotCodeAssistant:
                 )
                 val_report = self.validate_code_apis(code)
 
-            # 步骤 5：完成
+            # 最终输出
             completed_detail = self._get_localized_status(
                 AssistantStatus.COMPLETED
             )
@@ -499,7 +499,7 @@ class GodotCodeAssistant:
                 AssistantStatus.COMPLETED, completed_detail, status_hook
             )
 
-            # 构造用于在 Godot 中合并展示的纯净说明文本（排除了代码与自愈杂音）
+            # 构造用于在 Godot 中合并展示的纯净说明文本（排除了代码与自愈噪音）
             display_response_parts = []
             if parsed["approach"]:
                 display_response_parts.append(f"**思路方案**：\n{parsed['approach']}")

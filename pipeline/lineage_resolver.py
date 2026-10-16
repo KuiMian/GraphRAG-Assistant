@@ -125,7 +125,7 @@ class LineageResolver:
     def aggregate(self, class_name: str) -> dict:
         """自底向上逆向聚合 (Child-First Reverse Merging):
 
-        先占为主，保护子类的特化覆盖，并为每个符号附带声明来源与深度标定。
+        先入为主，保护子类的特化覆盖，并为每个符号附带声明来源与深度标定。
         """
         chain = self.get_inheritance_chain(class_name)
         if not chain:

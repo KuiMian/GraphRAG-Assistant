@@ -5,7 +5,7 @@ from pipeline.lineage_resolver import LineageResolver
 
 class SymbolicGraphRetriever:
 
-    # 为常用注解补充语义关键词，确保自然语言提问能顺利匹配
+    # 为常用注解补充语义关键词，确保自然语言提问顺利匹配
     ANNOTATION_KEYWORDS = {
         "@export": ["export", "inspector", "variable", "parameter", "property"],
         "@export_category": ["category", "inspector", "header", "organization", "organize"],
@@ -147,7 +147,7 @@ class SymbolicGraphRetriever:
             retrieved.get("top_annotations", []),
         ])
 
-        # 门控未通过：安全回退，发出负向约束
+        # 未通过：安全回退，发出负向约束
         if not has_candidates:
             lines.append("\n[Notice]")
             lines.append(

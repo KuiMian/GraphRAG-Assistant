@@ -171,16 +171,16 @@ def build_enriched_kb(api_json_path: Path, xml_dir: Path, output_path: Path):
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result_kb, f, ensure_ascii=False, indent=2)
 
-    print(f"[✓] 成功生成完全体知识库: {output_path.resolve()}")
+    print(f"成功生成完全体知识库: {output_path.resolve()}")
 
 
 if __name__ == "__main__":
     current_dir = Path(__file__).resolve().parent
 
-    # 按照你实际存放的路径调整 assets 相对定位
-    # 假设你的目录结构是:
-    #   assets/extension_api.json
-    #   assets/doc_classes/ (放所有的 xml)
+    # 按照实际存放的路径调整 assets 相对定位
+    # 假设目录结构是:
+    #   -assets/extension_api.json
+    #   -data/doc_classes/ (放所有的 xml)
     api_json = current_dir.parent / "assets" / "extension_api.json"
     doc_classes_dir = current_dir / "data" / "classes"
     output_kb = current_dir.parent / "assets" / "godot_enriched_kb.json"

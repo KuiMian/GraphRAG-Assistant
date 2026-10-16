@@ -24,7 +24,7 @@ class InheritanceDAG:
         self._flattened_cache.clear()
 
     def get_all_members_flattened(self, class_name: str) -> set[str]:
-        """沿 DAG 向上提取该类自身及其全部祖先节点的所有成员 (带缓存)"""
+        """沿 DAG 向上提取该类自身及其全部祖先节点的所有成员"""
         if class_name in self._flattened_cache:
             return self._flattened_cache[class_name]
 
@@ -56,7 +56,7 @@ class GodotKnowledgeBase:
         if not self.kb_path.exists():
             raise FileNotFoundError(f"找不到知识底座文件: {self.kb_path}")
 
-        print(f"[*] 正在载入增强知识库: {self.kb_path.name} ...")
+        print(f"正在载入增强知识库: {self.kb_path.name} ...")
         with open(self.kb_path, "r", encoding="utf-8") as f:
             self.data = json.load(f)
 
@@ -70,9 +70,9 @@ class GodotKnowledgeBase:
         self.dag = InheritanceDAG()
         self._build_engine_dag()
 
-        print(f"[✓] 知识库就绪:")
+        print(f"知识库就绪:")
         print(f"    - 单例: {len(self.singletons)} 个")
-        print(f"    - 引擎类: {len(self.classes)} 个 (已织入 DAG)")
+        print(f"    - 引擎类: {len(self.classes)} 个 (已关联 DAG)")
         print(f"    - 基础数学/内置类型: {len(self.builtin_classes)} 个")
         print(f"    - 全局工具函数: {len(self.global_functions)} 个")
 

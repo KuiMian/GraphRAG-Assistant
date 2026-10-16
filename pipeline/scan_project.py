@@ -11,12 +11,12 @@ from symbol_resolver import (
 def scan_godot_project(project_path: str | Path, kb_path: str | Path):
     project_dir = Path(project_path).resolve()
     if not project_dir.exists():
-        print(f"[!] 找不到工程目录: {project_dir}")
+        print(f"找不到工程目录: {project_dir}")
         return
 
     print("=" * 60)
-    print(f"🚀 开始扫描 Godot 工程: {project_dir.name}")
-    print(f"📁 路径: {project_dir}")
+    print(f"开始扫描 Godot 工程: {project_dir.name}")
+    print(f"路径: {project_dir}")
     print("=" * 60)
 
     start_time = time.time()
@@ -27,7 +27,7 @@ def scan_godot_project(project_path: str | Path, kb_path: str | Path):
     gd_files = [
         f for f in project_dir.rglob("*.gd") if ".godot" not in f.parts
     ]
-    print(f"\n[*] 共发现 {len(gd_files)} 个 GDScript 脚本，开始分析...\n")
+    print(f"\n共发现 {len(gd_files)} 个 GDScript 脚本，开始分析...\n")
 
     total_issues = 0
     scanned_files = 0
@@ -38,7 +38,7 @@ def scan_godot_project(project_path: str | Path, kb_path: str | Path):
         try:
             content = gd_file.read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
-            print(f"[!] 无法读取文件: {rel_path} ({e})")
+            print(f"无法读取文件: {rel_path} ({e})")
             continue
 
         result = analyzer.analyze_code(content)
@@ -58,7 +58,7 @@ def scan_godot_project(project_path: str | Path, kb_path: str | Path):
     cost_time = time.time() - start_time
 
     print("\n" + "=" * 60)
-    print("📊 扫描结果汇总")
+    print("扫描结果汇总")
     print("=" * 60)
     print(f"耗时: {cost_time:.2f} 秒")
     print(f"扫描脚本数: {scanned_files} / {len(gd_files)}")
