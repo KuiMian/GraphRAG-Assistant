@@ -1,6 +1,8 @@
 # GraphRAG-Augmented Godot 4 Assistant
 # 基于 GraphRAG 与符号校验的 Godot 4 领域代码生成助手
 
+![image-20261017011217302](https://cdn.jsdelivr.net/gh/KuiMian/NoteImage@master/2026/10/upgit_20261017_image-20261017011217302.png)
+
 [English](#english) | [中文说明](#chinese)
 
 ---
@@ -57,6 +59,7 @@ uv sync
 
 #### Step 3: Enable the Plugin in Godot
 1. Place the `graphrag_assistant` folder under your project's `res://addons/` directory:
+    (Here, the backend is the root directory. It is recommended to package the Backend into the addons plugin directory.)
    ```text
    res://
    └── addons/
@@ -121,9 +124,8 @@ assets/
 *(若需从头构建图谱数据，可直接运行 `pipeline/` 目录下的图谱预处理脚本)*。
 
 #### 步骤 2：安装 Python 依赖
-打开终端，进入插件的后端目录一键同步依赖：
+打开终端，进入插件的后端目录一键同步依赖(这里的后端为根目录，推荐将backend打包至addons的插件目录下)：
 ```bash
-cd addons/graphrag_assistant/backend/
 uv sync
 ```
 *(注：`uv run` 具备环境感知能力，初次在 Godot 中拉起时也会自动按需完成虚拟环境构建)*。

@@ -12,6 +12,7 @@ extends PanelContainer
 
 #region python backend
 
+# 指向插件后端所在的根目录（视具体存放位置而定）
 const BACKEND_PATH := "../"
 const PYTHON_CMD := "uv"
 const SERVICE_PATH := BACKEND_PATH + "pipeline/assistant_service.py"
@@ -33,7 +34,6 @@ func _start_worker_thread(query: String) -> void:
 	worker_thread = Thread.new()
 	worker_thread.start(_thread_execute.bind(query))
 
-## 运行在后台 Worker 线程中，完全不阻塞编辑器主线程
 func _thread_execute(query: String) -> void:
 	var real_service_path := ProjectSettings.globalize_path("res://" + SERVICE_PATH).simplify_path()
 	var backend_root_dir := ProjectSettings.globalize_path("res://" + BACKEND_PATH).simplify_path()
@@ -42,37 +42,44 @@ func _thread_execute(query: String) -> void:
 	var budget_val: String = str(int(config_data.get("thinking_budget", 512)))
 
 	var args: PackedStringArray = [
-		"run",
-		"--directory", backend_root_dir,
-		"python",
-		"-u",
-		"-X", "utf8",
-		real_service_path,
-		"--query", query,
-		"--lang", lang_val,
-		"--budget", budget_val,
-		"--json-output"
+			"run",
+			"--directory", backend_root_dir,
+			"python",
+			"-X", "utf8",
+			real_service_path,
+			"--query", query,
+			"--lang", lang_val,
+			"--budget", budget_val,
+			"--json-output"
 	]
-
 	var pipe_dict := OS.execute_with_pipe(PYTHON_CMD, args, true)
 	if pipe_dict.is_empty() or not pipe_dict.has("stdio"):
-		task_completed.emit.call_deferred("")
+		task_completed.emit.call_deferred("[Error] 无法拉起 uv 进程，请检查 uv 是否在系统 PATH 中。")
 		return
 
 	var pipe: FileAccess = pipe_dict.get("stdio")
 	var pid: int = pipe_dict.get("pid", -1)
 	var thread_buffer := ""
 
-	while OS.is_process_running(pid) or not pipe.eof_reached():
-		var line := pipe.get_line()
-		if not line.is_empty():
-			thread_buffer += line + "\n"
-			_parse_stream_in_thread(line)
-		else:
-			OS.delay_msec(20) # 释放 CPU 片刻，避免空转
+	# 持续排干管道，即使子进程刚退出也要把残留缓冲完全读出
+	while true:
+		var has_new_line := false
+		while pipe.get_error() == OK and not pipe.eof_reached():
+			var line := pipe.get_line()
+			if not line.is_empty():
+				has_new_line = true
+				thread_buffer += line + "\n"
+				_parse_stream_in_thread(line)
+			else:
+				break
+
+		# 子进程已经终止且没有新行输出，则安全退出
+		if not OS.is_process_running(pid) and not has_new_line:
+			break
+
+		OS.delay_msec(10)
 
 	pipe.close()
-	# 安全切换回主线程处理最终 JSON 渲染
 	task_completed.emit.call_deferred(thread_buffer)
 
 func _parse_stream_in_thread(line: String) -> void:
@@ -121,7 +128,8 @@ func load_config() -> void:
 		_refresh_ui()
 
 func save_config() -> void:
-	if api_key_input:
+	# 防空写保护：只有输入框确实填了内容才覆写，防止界面空白冲刷磁盘已有的真实 Key
+	if api_key_input and not api_key_input.text.strip_edges().is_empty():
 		config_data["api_key"] = api_key_input.text.strip_edges()
 	if thinking_budget_span:
 		config_data["thinking_budget"] = int(thinking_budget_span.value)
@@ -172,7 +180,6 @@ func _on_copy_pressed() -> void:
 	DisplayServer.clipboard_set(code_edit.text)
 	status_label.text = "代码已复制"
 
-# 接收后台线程发射回来的状态信号并实时刷新 UI
 func _on_state_updated(tag: String) -> void:
 	status_label.text = tag
 
@@ -183,6 +190,11 @@ func _on_task_completed(output_buffer: String) -> void:
 	if worker_thread != null:
 		worker_thread.wait_to_finish()
 		worker_thread = null
+
+	# 在 Godot 编辑器输出控制台打印全部原始输出，便于追踪任何隐蔽错误
+	print("=== PIPELINE OUTPUT START ===")
+	print(output_buffer)
+	print("=== PIPELINE OUTPUT END ===")
 
 	var start_marker := "__GODOT_PLUGIN_PAYLOAD_START__"
 	var end_marker := "__GODOT_PLUGIN_PAYLOAD_END__"
@@ -227,8 +239,13 @@ func _on_task_completed(output_buffer: String) -> void:
 				text_label.visible = true
 		else:
 			status_label.text = "JSON 解析失败"
+			text_label.visible = true
+			text_label.text = "[color=red]JSON 解析错误，请检查输出日志。[/color]"
 	else:
-		status_label.text = "子进程异常退出"
+		status_label.text = "执行异常，未检测到结果载荷"
+		text_label.visible = true
+		# 出现异常时直接将后台的标准/错误输出展示在面板上，防止抓瞎
+		text_label.text = "[color=yellow]后台进程退出，输出信息如下：[/color]\n\n" + output_buffer
 
 	chat_input.editable = true
 	submit_button.disabled = false
