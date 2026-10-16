@@ -131,7 +131,6 @@ vertical_alignment = 1
 unique_name_in_owner = true
 custom_minimum_size = Vector2(192, 0)
 layout_mode = 2
-text = "AQ.Ab8RN6LocyNCgQLDHDv60mT2KW9ny3h3tst9DSGinRvSZ6D89Q"
 
 [node name="HBoxContainer2" type="HBoxContainer" parent="TabContainer/Settings/VboxContainer" unique_id=1042294935]
 layout_mode = 2
